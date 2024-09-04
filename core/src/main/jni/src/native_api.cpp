@@ -50,7 +50,7 @@
 
 namespace lspd {
 
-    using lsplant::operator""_tstr;
+    using lsplant::Hooker;
     std::list<NativeOnModuleLoaded> moduleLoadedCallbacks;
     std::list<std::string> moduleNativeLibs;
     std::unique_ptr<void, std::function<void(void *)>> protected_page(
@@ -70,7 +70,7 @@ namespace lspd {
 
     void RegisterNativeLib(const std::string &library_name) {
         static bool initialized = []() {
-            return InstallNativeAPI({
+            return InstallNativeAPI(lsplant::InitInfo {
                 .inline_hooker = [](auto t, auto r) {
                     void* bk = nullptr;
                     return HookFunction(t, r, &bk) == RS_SUCCESS ? bk : nullptr;
@@ -90,55 +90,55 @@ namespace lspd {
         return false;
     }
 
-    CREATE_HOOK_STUB_ENTRY(
+    inline static Hooker<
             "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv",
-            void*, do_dlopen, (const char* name, int flags, const void* extinfo,
-                    const void* caller_addr), {
-                auto *handle = backup(name, flags, extinfo, caller_addr);
-                std::string ns;
-                if (name) {
-                    ns = std::string(name);
-                } else {
-                    ns = "NULL";
+            void* (const char*, int, const void*, const void*)>
+            do_dlopen_ = +[](const char* name, int flags, const void* extinfo,
+                    const void* caller_addr) -> void* {
+        void* handle = do_dlopen_(name, flags, extinfo, caller_addr);
+        std::string ns;
+        if (name) {
+            ns = std::string(name);
+        } else {
+            ns = "NULL";
+        }
+        LOGD("native_api: do_dlopen({})", ns);
+        if (handle == nullptr) {
+            return nullptr;
+        }
+        for (std::string_view module_lib: moduleNativeLibs) {
+            // the so is a module so
+            if (hasEnding(ns, module_lib)) [[unlikely]] {
+                LOGD("Loading module native library {}", module_lib);
+                void *native_init_sym = dlsym(handle, "native_init");
+                if (native_init_sym == nullptr) [[unlikely]] {
+                    LOGD("Failed to get symbol \"native_init\" from library {}",
+                         module_lib);
+                    break;
                 }
-                LOGD("native_api: do_dlopen({})", ns);
-                if (handle == nullptr) {
-                    return nullptr;
+                auto native_init = reinterpret_cast<NativeInit>(native_init_sym);
+                auto *callback = native_init(entries);
+                if (callback) {
+                    moduleLoadedCallbacks.push_back(callback);
+                    // return directly to avoid module interaction
+                    return handle;
                 }
-                for (std::string_view module_lib: moduleNativeLibs) {
-                    // the so is a module so
-                    if (hasEnding(ns, module_lib)) [[unlikely]] {
-                        LOGD("Loading module native library {}", module_lib);
-                        void *native_init_sym = dlsym(handle, "native_init");
-                        if (native_init_sym == nullptr) [[unlikely]] {
-                            LOGD("Failed to get symbol \"native_init\" from library {}",
-                                 module_lib);
-                            break;
-                        }
-                        auto native_init = reinterpret_cast<NativeInit>(native_init_sym);
-                        auto *callback = native_init(entries);
-                        if (callback) {
-                            moduleLoadedCallbacks.push_back(callback);
-                            // return directly to avoid module interaction
-                            return handle;
-                        }
-                    }
-                }
+            }
+        }
 
-                // Callbacks
-                for (auto &callback: moduleLoadedCallbacks) {
-                    callback(name, handle);
-                }
-                return handle;
-            });
+        // Callbacks
+        for (auto &callback: moduleLoadedCallbacks) {
+            callback(name, handle);
+        }
+        return handle;
+    };
 
-    bool InstallNativeAPI(const lsplant::HookHandler & handler) {
-        auto *do_dlopen_sym = SandHook::ElfImg("/linker").getSymbAddress(
+    bool InstallNativeAPI(const lsplant::HookHandler &handler) {
+        void* do_dlopen_sym = SandHook::ElfImg("/linker").getSymbAddress(
                 "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv");
         LOGD("InstallNativeAPI: {}", do_dlopen_sym);
         if (do_dlopen_sym) [[likely]] {
-            HookSymNoHandle(handler, do_dlopen_sym, do_dlopen);
-            return true;
+            handler.hook(do_dlopen_);
         }
         return false;
     }
