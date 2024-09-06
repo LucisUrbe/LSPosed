@@ -24,6 +24,7 @@
 
 #include "native_api.h"
 #include "logging.h"
+#include "symbol_cache.h"
 #include "utils/hook_helper.hpp"
 #include <sys/mman.h>
 #include <dobby.h>
@@ -74,6 +75,12 @@ namespace lspd {
                 .inline_hooker = [](auto t, auto r) {
                     void* bk = nullptr;
                     return HookFunction(t, r, &bk) == RS_SUCCESS ? bk : nullptr;
+                },
+                .art_symbol_resolver = [](auto symbol) {
+                    return SandHook::ElfImg("/linker").getSymbAddress(symbol);
+                },
+                .art_symbol_prefix_resolver = [](auto symbol) {
+                    return SandHook::ElfImg("/linker").getSymbPrefixFirstAddress(symbol);
                 },
             });
         }();
