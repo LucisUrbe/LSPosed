@@ -141,12 +141,6 @@ namespace lspd {
     };
 
     bool InstallNativeAPI(const lsplant::HookHandler &handler) {
-        void* do_dlopen_sym = SandHook::ElfImg("/linker").getSymbAddress(
-                "__dl__Z9do_dlopenPKciPK17android_dlextinfoPKv");
-        LOGD("InstallNativeAPI: {}", do_dlopen_sym);
-        if (do_dlopen_sym) [[likely]] {
-            handler.hook(do_dlopen_);
-        }
-        return false;
+        return handler.hook(do_dlopen_);
     }
 }
